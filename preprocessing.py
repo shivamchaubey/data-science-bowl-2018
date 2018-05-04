@@ -3,17 +3,16 @@ import random
 import sys
 import warnings
 import numpy as np
-from itertools import chain
 from skimage.io import imread, imshow, imread_collection, concatenate_images
 from skimage.transform import resize
 from skimage.morphology import label
-from keras.utils import Progbar
 import cv2
-import imutils
 from scipy.ndimage.interpolation import map_coordinates
 from scipy.ndimage.filters import gaussian_filter
 from tqdm import tqdm
 import matplotlib.pyplot as plt
+from unet_model import train_model
+from submission import prediction 
 
 seed = 42
 random.seed = seed
@@ -21,14 +20,14 @@ np.random.seed = seed
 
 # Data Path
 TRAIN_PATH = 'input/stage1_train/'
-TEST_PATH = 'input/stage1_test/'
+TEST_PATH = 'input/stage2_test_final/'
 
 # Get train and test IDs
 train_ids = next(os.walk(TRAIN_PATH))[1]
 test_ids = next(os.walk(TEST_PATH))[1]
 
 def reflect(img):
-    shift=20
+    shift=10
     reflect = cv2.copyMakeBorder(img,shift,shift,shift,shift,cv2.BORDER_REFLECT)
     return reflect
 
@@ -111,7 +110,7 @@ def split_data(X_train,Y_train):
             red_mask.append(mask)
             red_train.append(gamma)
             red_mask.append(mask)
-            fliters_=[blur1,blur2,blur3,blur4,blur5,gamma]
+            filters_=[blur1,blur2,blur3,blur4,blur5,gamma]
             for image in filters_:
                 horizontal_img,vertical_img,both_img=rotate(image)
                 red_train.append(horizontal_img)
@@ -153,16 +152,20 @@ def split_data(X_train,Y_train):
                 black_mask.append(both_mask)
     for i,(im,mask) in enumerate(zip(red_train,red_mask)):
         red_train[i]=reflect(im)
+     #    kernel = np.ones((3,3),np.uint8)
+    	# mask = cv2.erode(mask,kernel,iterations = 1)
         mask=reflect(mask)
         red_mask[i]=mask.astype(dtype=np.bool)
         
     for i,(im,mask) in enumerate(zip(black_train,black_mask)):
         black_train[i]=reflect(im)
+     #    kernel = np.ones((3,3),np.uint8)
+    	# mask = cv2.erode(mask,kernel,iterations = 1)
         mask=reflect(mask)
         black_mask[i]=mask.astype(dtype=np.bool)
         
-    print len(red_train), "total red train images", len(red_mask)," total mask"
-    print len(black_train), "total black train images", len(black_mask)," total mask"
+    print (len(red_train), "total red train images", len(red_mask)," total mask")
+    print (len(black_train), "total black train images", len(black_mask)," total mask")
     val_data_train=red_train[:int(len(red_train)*0.1)]+black_train[:int(len(black_train)*0.1)]  
     val_data_label=red_mask[:int(len(red_mask)*0.1)]+black_mask[:int(len(black_mask)*0.1)]  
     train_data=red_train[int(len(red_train)*0.1):]+black_train[int(len(black_train)*0.1):]
@@ -174,21 +177,24 @@ def split_data(X_train,Y_train):
     train_data, train_label = zip(*c)
     train_data=np.array(train_data)
     train_label=np.array(train_label)    
-    np.save("train_img",train_data)
-    np.save("train_mask",train_label)
-    print train_data.shape, "X_ train size", train_label.shape, "Y_train size"
+    np.save("numpy_data/train_img",train_data)
+    np.save("numpy_data/train_mask",train_label)
+    np.save("numpy_data/val_data_train",val_data_train)
+    np.save("numpy_data/val_data_label",val_data_label)
+    
+    print (train_data.shape, "X_ train size", train_label.shape, "Y_train size")
     return val_data_train,val_data_label,train_data,train_label
 
 # Function read train images and mask return as nump array
-def read_train_data(IMG_WIDTH=512-40,IMG_HEIGHT=512-40,IMG_CHANNELS=3):
+def read_train_data(IMG_WIDTH=256-20,IMG_HEIGHT=256-20,IMG_CHANNELS=3):
     X_train=[]
     Y_train=[]
-    print 'loading raw images and resizing ... '
+    print ('loading raw images and resizing ... ')
     sys.stdout.flush()
-    if os.path.isfile("train_img_raw.npy") and os.path.isfile("train_mask_raw.npy"):
-        print "training images loaded from memory"
-        X_train = np.load("train_img_raw.npy")
-        Y_train = np.load("train_mask_raw.npy")
+    if os.path.isfile("numpy_data/train_img_raw.npy") and os.path.isfile("numpy_data/train_mask_raw.npy"):
+        print ("training images loaded from memory")
+        X_train = np.load("numpy_data/train_img_raw.npy")
+        Y_train = np.load("numpy_data/train_mask_raw.npy")
         return X_train,Y_train
     for n, id_ in tqdm(enumerate(train_ids)):
         path = TRAIN_PATH + id_
@@ -203,63 +209,13 @@ def read_train_data(IMG_WIDTH=512-40,IMG_HEIGHT=512-40,IMG_CHANNELS=3):
     , axis=-1)
             mask = np.maximum(mask, mask_)
         Y_train.append(mask)
-    np.save("train_img_raw",X_train)
-    np.save("train_mask_raw",Y_train)
+    np.save("numpy_data/train_img_raw",X_train)
+    np.save("numpy_data/train_mask_raw",Y_train)
     return X_train,Y_train
 
-
-# Function to read test images and return as numpy array
-def read_test_data(IMG_WIDTH=512-40,IMG_HEIGHT=512-40,IMG_CHANNELS=3):
-    X_test = np.zeros((len(test_ids), IMG_HEIGHT, IMG_WIDTH, IMG_CHANNELS), dtype=np.uint8)
-    sizes_test = []
-    print '\n loading and resizing test images ... '
-    sys.stdout.flush()
-    if os.path.isfile("test_img.npy") and os.path.isfile("test_size.npy"):
-        print("Test images loaded from memory")
-        X_test = np.load("test_img.npy")
-        sizes_test = np.load("test_size.npy")
-        return X_test,sizes_test
-    b = Progbar(len(test_ids))
-    for n, id_ in tqdm(enumerate(test_ids)):
-        path = TEST_PATH + id_
-        img = imread(path + '/images/' + id_ + '.png')[:,:,:IMG_CHANNELS]
-        sizes_test.append([img.shape[0], img.shape[1]])
-        img = resize(img, (IMG_HEIGHT, IMG_WIDTH), mode='constant', preserve_range=True)
-        X_test[n] = img
-        b.update(n)
-    np.save("test_img",X_test)
-    np.save("test_size",sizes_test)
-    print X_test.shape, "test data size"
-    return X_test,sizes_test
-
-# Run-length encoding stolen from https://www.kaggle.com/rakhlin/fast-run-length-encoding-python
-def rle_encoding(x):
-    dots = np.where(x.T.flatten() == 1)[0]
-    run_lengths = []
-    prev = -2
-    for b in dots:
-        if (b>prev+1): run_lengths.extend((b + 1, 0))
-        run_lengths[-1] += 1
-        prev = b
-    return run_lengths
-
-def prob_to_rles(x, cutoff=0.5):
-    lab_img = label(x > cutoff)
-    for i in range(1, lab_img.max() + 1):
-        yield rle_encoding(lab_img == i)
-
-# Iterate over the test IDs and generate run-length encodings for each seperate mask identified by skimage
-def mask_to_rle(preds_test_upsampled):
-    new_test_ids = []
-    rles = []
-    for n, id_ in enumerate(test_ids):
-        rle = list(prob_to_rles(preds_test_upsampled[n]))
-        rles.extend(rle)
-        new_test_ids.extend([id_] * len(rle))
-    return new_test_ids,rles
-    
 if __name__ == '__main__':
     x,y = read_train_data()
     val_data_train,val_data_label,train_data,train_label=split_data(x,y)
-    x,y = read_test_data()
+    # train_model()
+    # prediction()
     
