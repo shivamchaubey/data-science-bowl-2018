@@ -24,5 +24,5 @@ Unet-architecture were used with binary_crossentropy loss function.
 
 Post porcessing steps:
 1. Predicted mask were cropped and resized to orginal training image.
-2. Dilation were done to recover the actual size.
-3. Hole filling on predicted mask
+2. Dilation were done to recover the actual size of nuclei.
+
