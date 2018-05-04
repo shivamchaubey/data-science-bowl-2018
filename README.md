@@ -18,6 +18,7 @@ Data augmentation has been done on raw training data.
 Training data of size 256X256 pixels were prepared for training model.
 
 Training model:
+Trainging is performed in google colaboratory.
 Unet-architecture were used with binary_crossentropy loss function. 
 (https://arxiv.org/abs/1505.04597)
 
